@@ -25,6 +25,10 @@ class Settings(BaseSettings):
     RULE_WEIGHT: float = 0.5
     STAT_WEIGHT: float = 0.3
     ISO_WEIGHT: float = 0.2
+    RETRAIN_COOLDOWN_SECONDS: int = 300
+
+    # Authentication – empty string disables auth (dev mode)
+    API_KEY: str = ""
 
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
 

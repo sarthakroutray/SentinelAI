@@ -16,9 +16,11 @@ from app.models.alert import Alert
 from app.models.log import Log
 from app.schemas.metrics import MetricsResponse, MetricsTimeseriesResponse
 
+from app.middleware.auth import verify_api_key
+
 logger = logging.getLogger(__name__)
 
-router = APIRouter(tags=["Observability"])
+router = APIRouter(tags=["Observability"], dependencies=[Depends(verify_api_key)])
 
 _lock = threading.Lock()
 _counters: dict[str, int] = {

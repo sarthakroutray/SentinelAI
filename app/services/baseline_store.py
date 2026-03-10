@@ -2,6 +2,11 @@
 
 Only stores feature vectors from low-risk, non-anomalous logs.
 Thread-safe sliding window with configurable max size.
+
+⚠ SINGLE-WORKER CONSTRAINT
+   This store is held entirely in-memory.  Each worker process maintains
+   an independent buffer.  Deploy a single alert-worker instance for
+   consistent model training data.
 """
 
 from __future__ import annotations

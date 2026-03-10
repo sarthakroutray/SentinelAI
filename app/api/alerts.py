@@ -7,10 +7,11 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_session
+from app.middleware.auth import verify_api_key
 from app.models.alert import Alert
 from app.schemas.alert import AlertListResponse, AlertResponse, Severity
 
-router = APIRouter(prefix="/alerts", tags=["Alerts"])
+router = APIRouter(prefix="/alerts", tags=["Alerts"], dependencies=[Depends(verify_api_key)])
 
 AlertSort = Literal[
     "timestamp_desc",

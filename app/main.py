@@ -5,7 +5,7 @@ from contextlib import asynccontextmanager
 from contextlib import suppress
 import logging
 
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.alerts import router as alerts_router
@@ -17,6 +17,7 @@ from app.database import Base, async_session, engine
 from app.logging_config import setup_logging
 from app.metrics import compute_metrics_response
 from app.metrics import router as metrics_router
+from app.middleware.auth import verify_api_key
 from app.middleware.request_id import RequestIdMiddleware
 from app.realtime.connection_manager import connection_manager
 from app.redis_pool import close_redis
@@ -94,14 +95,14 @@ app.include_router(health_router)
 app.include_router(dashboard_ws_router)
 
 
-@app.get("/dlq", tags=["Observability"])
+@app.get("/dlq", tags=["Observability"], dependencies=[Depends(verify_api_key)])
 async def inspect_dlq():
     """Return the contents of the dead-letter queue."""
     from app.services.queue_service import dlq_list
     return await dlq_list()
 
 
-@app.get("/queues", tags=["Observability"])
+@app.get("/queues", tags=["Observability"], dependencies=[Depends(verify_api_key)])
 async def queue_stats():
     """Return current queue lengths."""
     from app.services.queue_service import queue_lengths

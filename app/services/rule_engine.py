@@ -1,4 +1,10 @@
-"""Rule engine – evaluates incoming logs and returns alert severity + reason."""
+"""Rule engine – evaluates incoming logs and returns alert severity + reason.
+
+⚠ SINGLE-WORKER CONSTRAINT
+   The per-IP burst tracker (``_IpTracker``) is held in-memory.  Each
+   worker process maintains an independent set of rate-limit buckets.
+   Deploy a single alert-worker instance for consistent rule evaluation.
+"""
 
 from __future__ import annotations
 

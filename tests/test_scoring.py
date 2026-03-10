@@ -300,7 +300,76 @@ class TestScoringEngine:
 
     def test_breakdown_dict_structure(self):
         result = score_compute(0.12, 0.08, rule_triggered=False)
-        assert result.breakdown == {"statistical": 0.12, "isolation": 0.08}
+        assert result.breakdown == {"rule": 0.0, "statistical": 0.12, "isolation": 0.08}
+
+    def test_rule_severity_preserved_high(self):
+        """Rule engine HIGH must not be downgraded to MEDIUM by weighted scoring."""
+        # Low stat + iso scores → weighted score gives MEDIUM at best,
+        # but rule_severity="HIGH" must win.
+        result = score_compute(0.0, 0.0, rule_triggered=True, rule_severity="HIGH")
+        assert result.severity == "HIGH"
+
+    def test_rule_severity_none_does_not_affect(self):
+        """When rule_severity is None, behaviour is unchanged."""
+        result = score_compute(0.0, 0.0, rule_triggered=True, rule_severity=None)
+        assert result.severity == "MEDIUM"  # Original floor behaviour
+
+    def test_rule_severity_not_higher_than_scoring(self):
+        """If scoring already gives HIGH, rule_severity MEDIUM should not downgrade."""
+        result = score_compute(1.0, 1.0, rule_triggered=True, rule_severity="MEDIUM")
+        assert result.severity == "HIGH"
+
+
+# ── Retrain Cooldown ─────────────────────────────────────────────────
+
+
+class TestRetrainCooldown:
+    """Validate that the isolation engine requires both enough new
+    samples AND a time cooldown before allowing retraining."""
+
+    def test_should_retrain_false_immediately_after_retrain(self):
+        """After retraining, should_retrain returns False even with enough samples."""
+        import asyncio
+        import time
+
+        # Fill baseline and retrain
+        for i in range(settings.MODEL_RETRAIN_INTERVAL):
+            baseline_store.add([1.0, float(i), 0.0, 0.0])
+
+        loop = asyncio.new_event_loop()
+        try:
+            loop.run_until_complete(isolation_engine.retrain_async())
+        finally:
+            loop.close()
+
+        assert isolation_engine.is_trained is True
+
+        # Add more samples (enough for another retrain)
+        for i in range(settings.MODEL_RETRAIN_INTERVAL):
+            baseline_store.add([1.0, float(i + 1000), 0.0, 0.0])
+
+        # But cooldown hasn't elapsed → should_retrain is False
+        assert isolation_engine.should_retrain() is False
+
+    def test_should_retrain_needs_new_samples(self):
+        """Even after cooldown, retraining requires enough NEW samples."""
+        # Fill baseline to threshold
+        for i in range(settings.MODEL_RETRAIN_INTERVAL):
+            baseline_store.add([1.0, float(i), 0.0, 0.0])
+
+        # Simulate having retrained and cooldown elapsed
+        isolation_engine._samples_at_last_retrain = baseline_store.size
+        isolation_engine._last_retrain_time = 0.0  # long ago
+
+        # No new samples since retrain → should_retrain is False
+        assert isolation_engine.should_retrain() is False
+
+        # Add enough new samples
+        for i in range(settings.MODEL_RETRAIN_INTERVAL):
+            baseline_store.add([1.0, float(i + 1000), 0.0, 0.0])
+
+        # Now should_retrain is True
+        assert isolation_engine.should_retrain() is True
 
 
 # ── Contamination Guard Logic ────────────────────────────────────────

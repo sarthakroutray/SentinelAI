@@ -12,6 +12,7 @@ from sqlalchemy.pool import StaticPool
 
 os.environ.setdefault("DATABASE_URL", "postgresql+asyncpg://test:test@localhost:5432/sentinel_test")
 os.environ.setdefault("REDIS_URL", "redis://localhost:6379/0")
+os.environ.setdefault("API_KEY", "")  # Auth disabled in tests
 
 from app.api.alerts import router as alerts_router
 from app.api.health import router as health_router

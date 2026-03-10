@@ -1,8 +1,14 @@
 """Alert worker – processes log payloads from the Redis queue.
 
 Phase 3: Hybrid anomaly detection with contamination-safe retraining.
-Stateless, horizontally scalable, with graceful shutdown.
 Run via:  python -m app.workers.alert_worker
+
+⚠ SINGLE-WORKER CONSTRAINT
+   Detection engines (profile_store, baseline_store, isolation model,
+   rule-engine burst tracker) maintain state in-memory.  Running multiple
+   worker processes will produce non-deterministic scoring because each
+   process holds an independent copy of these stores.  Deploy a **single
+   alert-worker instance** for consistent behaviour.
 """
 
 from __future__ import annotations
@@ -31,6 +37,7 @@ from app.services.isolation_engine import isolation_engine
 from app.services.queue_service import (
     acknowledge,
     dequeue,
+    enqueue,
     publish_dashboard_event,
     set_worker_heartbeat,
     recover_processing_queue,
@@ -71,6 +78,39 @@ async def _heartbeat_loop(interval_seconds: float = 5.0) -> None:
             await asyncio.wait_for(_shutdown.wait(), timeout=interval_seconds)
         except asyncio.TimeoutError:
             continue
+
+
+async def _sweep_unenqueued_logs() -> int:
+    """Re-enqueue logs that were persisted but never reached Redis.
+
+    This covers the case where ``ingest_log`` committed the log row but
+    the subsequent Redis ``enqueue`` call failed (``enqueued=False``).
+    Called once on worker startup.
+    """
+    count = 0
+    async with async_session() as session:
+        stmt = select(Log).where(Log.enqueued == False)  # noqa: E712
+        result = await session.execute(stmt)
+        logs = result.scalars().all()
+
+        for log in logs:
+            try:
+                await enqueue({
+                    "log_id": str(log.id),
+                    "log_level": log.log_level,
+                    "message": log.message,
+                    "ip_address": log.ip_address,
+                })
+                log.enqueued = True
+                count += 1
+            except Exception:
+                logger.warning("Failed to re-enqueue log %s during sweep", log.id)
+
+        if count:
+            await session.commit()
+            logger.info("Sweep: re-enqueued %d previously failed logs", count)
+
+    return count
 
 
 async def _process_message(message: dict) -> None:
@@ -134,6 +174,7 @@ async def _process_message(message: dict) -> None:
             statistical_score=statistical_score,
             isolation_score=isolation_score,
             rule_triggered=rule_triggered,
+            rule_severity=rule_result.severity if rule_result else None,
         )
 
         # ── Step 5: Build reason string ──────────────────────────────
@@ -209,6 +250,11 @@ async def run() -> None:
     if recovered:
         logger.info("Recovered %d orphaned messages", recovered)
 
+    # Sweep for logs that were persisted but never enqueued to Redis
+    swept = await _sweep_unenqueued_logs()
+    if swept:
+        logger.info("Swept %d un-enqueued logs", swept)
+
     heartbeat_task = asyncio.create_task(_heartbeat_loop())
     logger.info("Worker ready, polling queue...")
 
@@ -239,3 +285,4 @@ async def run() -> None:
 
 if __name__ == "__main__":
     asyncio.run(run())
+

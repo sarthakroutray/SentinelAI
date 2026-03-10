@@ -10,9 +10,10 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_session
+from app.middleware.auth import verify_api_key
 from app.schemas.health import HealthResponse
 
-router = APIRouter(tags=["Health"])
+router = APIRouter(tags=["Health"], dependencies=[Depends(verify_api_key)])
 
 
 @router.get("/health", response_model=HealthResponse)

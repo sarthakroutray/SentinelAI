@@ -41,6 +41,9 @@ async def dequeue() -> dict[str, Any] | None:
 
     Returns the parsed message dict, or None if the queue is empty.
     Uses BLMOVE for atomic move (blocking with 2s timeout).
+
+    Each dequeued message is tagged with ``started_processing_at`` so
+    the recovery sweep can distinguish stale items from active ones.
     """
     redis = await get_redis()
     raw = await redis.blmove(
@@ -50,10 +53,19 @@ async def dequeue() -> dict[str, Any] | None:
     if raw is None:
         return None
     parsed = json.loads(raw)
-    # Preserve the exact original bytes so acknowledge/retry_or_dlq can
-    # use them for lrem matching instead of re-serializing (which could
-    # produce different bytes for floats on some platforms).
-    parsed["__raw"] = raw
+
+    # Tag with processing start time and replace entry in processing queue
+    parsed["started_processing_at"] = time.time()
+    updated_raw = json.dumps({k: v for k, v in parsed.items() if not k.startswith("__")})
+
+    # Atomically replace: remove the original raw entry, push updated one
+    pipe = redis.pipeline()
+    pipe.lrem(PROCESSING_QUEUE, 1, raw)
+    pipe.lpush(PROCESSING_QUEUE, updated_raw)
+    await pipe.execute()
+
+    # Preserve the exact bytes for acknowledge/retry_or_dlq matching
+    parsed["__raw"] = updated_raw
     return parsed
 
 
@@ -103,23 +115,40 @@ async def retry_or_dlq(message: dict[str, Any]) -> bool:
 
 
 async def recover_processing_queue() -> int:
-    """Move stale items from the processing queue back to the main queue.
+    """Move *stale* items from the processing queue back to the main queue.
+
+    Only requeues messages whose ``started_processing_at`` is older than
+    ``VISIBILITY_TIMEOUT`` seconds ago, preventing work-stealing from
+    workers that are still actively processing a message.
 
     Called on worker startup for crash recovery.
     Returns the number of recovered messages.
     """
     redis = await get_redis()
+    items = await redis.lrange(PROCESSING_QUEUE, 0, -1)
+    if not items:
+        return 0
+
+    now = time.time()
     count = 0
-    while True:
-        raw = await redis.lmove(
-            PROCESSING_QUEUE, MAIN_QUEUE,
-            src="RIGHT", dest="LEFT",
-        )
-        if raw is None:
-            break
-        count += 1
+    for raw in items:
+        try:
+            parsed = json.loads(raw)
+        except (json.JSONDecodeError, TypeError):
+            # Corrupt entry – move it to main queue for reprocessing
+            await redis.lrem(PROCESSING_QUEUE, 1, raw)
+            await redis.lpush(MAIN_QUEUE, raw)
+            count += 1
+            continue
+
+        started_at = parsed.get("started_processing_at", 0)
+        if now - started_at > VISIBILITY_TIMEOUT:
+            await redis.lrem(PROCESSING_QUEUE, 1, raw)
+            await redis.lpush(MAIN_QUEUE, raw)
+            count += 1
+
     if count:
-        logger.info("Recovered %d messages from processing queue", count)
+        logger.info("Recovered %d stale messages from processing queue (visibility_timeout=%ds)", count, VISIBILITY_TIMEOUT)
     return count
 
 

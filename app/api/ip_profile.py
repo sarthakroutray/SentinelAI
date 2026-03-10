@@ -9,11 +9,12 @@ from sqlalchemy import case, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_session
+from app.middleware.auth import verify_api_key
 from app.models.alert import Alert
 from app.models.log import Log
 from app.schemas.ip_profile import IpProfileResponse
 
-router = APIRouter(prefix="/ip", tags=["IP Profile"])
+router = APIRouter(prefix="/ip", tags=["IP Profile"], dependencies=[Depends(verify_api_key)])
 
 
 @router.get("/{ip}/profile", response_model=IpProfileResponse)

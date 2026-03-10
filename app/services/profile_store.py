@@ -1,4 +1,10 @@
-"""In-memory IP / source profile store for statistical anomaly detection."""
+"""In-memory IP / source profile store for statistical anomaly detection.
+
+⚠ SINGLE-WORKER CONSTRAINT
+   This store is held entirely in-memory.  Each worker process maintains
+   an independent set of IP profiles and global event counters.  Deploy a
+   single alert-worker instance for consistent statistical scoring.
+"""
 
 from __future__ import annotations
 

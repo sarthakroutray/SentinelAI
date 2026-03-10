@@ -4,6 +4,12 @@ Score range: 0.0 – 1.0
 
 Model trains ONLY on baseline (non-anomalous) data.
 Retraining is non-blocking and uses asyncio.to_thread.
+
+⚠ SINGLE-WORKER CONSTRAINT
+   The trained model and retraining state are held in-memory.  Running
+   multiple worker processes will result in each worker maintaining its
+   own independent model.  For consistent scoring, deploy a single
+   alert-worker instance.
 """
 
 from __future__ import annotations
@@ -11,6 +17,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import threading
+import time
 from datetime import datetime, timezone
 
 import numpy as np
@@ -32,6 +39,8 @@ class IsolationEngine:
         self._lock = threading.Lock()
         self._contamination = settings.ISOLATION_CONTAMINATION
         self._last_retrain_at: datetime | None = None
+        self._last_retrain_time: float = 0.0  # monotonic time of last retrain
+        self._samples_at_last_retrain: int = 0
 
     # ── Scoring ──────────────────────────────────────────────────────
 
@@ -64,11 +73,30 @@ class IsolationEngine:
     # ── Retraining ───────────────────────────────────────────────────
 
     def should_retrain(self) -> bool:
-        """Check if we have enough baseline data and aren't already retraining."""
+        """Check if retraining conditions are met.
+
+        Retraining requires ALL of:
+        1. Not already retraining
+        2. Enough NEW samples since last retrain (>= MODEL_RETRAIN_INTERVAL)
+        3. Enough time elapsed since last retrain (>= RETRAIN_COOLDOWN_SECONDS),
+           or never retrained before
+        """
         with self._lock:
             if self._retraining:
                 return False
-        return baseline_store.size >= settings.MODEL_RETRAIN_INTERVAL
+
+            # Condition: enough new samples since last retrain
+            new_samples = baseline_store.size - self._samples_at_last_retrain
+            if new_samples < settings.MODEL_RETRAIN_INTERVAL:
+                return False
+
+            # Condition: cooldown elapsed (skip check on first retrain)
+            if self._last_retrain_time > 0:
+                elapsed = time.monotonic() - self._last_retrain_time
+                if elapsed < settings.RETRAIN_COOLDOWN_SECONDS:
+                    return False
+
+            return True
 
     async def retrain_async(self) -> None:
         """Retrain in a background thread – non-blocking."""
@@ -102,6 +130,8 @@ class IsolationEngine:
                 self._model = new_model
                 self._trained = True
                 self._last_retrain_at = datetime.now(timezone.utc)
+                self._last_retrain_time = time.monotonic()
+                self._samples_at_last_retrain = baseline_store.size
 
             try:
                 from app.services.queue_service import set_last_model_retrain
@@ -122,6 +152,8 @@ class IsolationEngine:
             self._trained = False
             self._retraining = False
             self._last_retrain_at = None
+            self._last_retrain_time = 0.0
+            self._samples_at_last_retrain = 0
 
     @property
     def last_retrain_at(self) -> datetime | None:
@@ -131,3 +163,4 @@ class IsolationEngine:
 
 # Module-level singleton
 isolation_engine = IsolationEngine()
+

@@ -7,13 +7,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_session
 from app.metrics import increment_async
+from app.middleware.auth import verify_api_key
 from app.schemas.alert import LogWithAlertResponse, LogResponseRef
 from app.schemas.log import LogCreate
 from app.services.log_service import ingest_log
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/logs", tags=["Logs"])
+router = APIRouter(prefix="/logs", tags=["Logs"], dependencies=[Depends(verify_api_key)])
 
 
 @router.post("", response_model=LogWithAlertResponse, status_code=201)

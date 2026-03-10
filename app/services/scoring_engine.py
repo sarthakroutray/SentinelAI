@@ -9,6 +9,8 @@ from dataclasses import dataclass
 
 from app.config import settings
 
+_SEVERITY_ORDER = {"NONE": 0, "LOW": 1, "MEDIUM": 2, "HIGH": 3}
+
 
 @dataclass(frozen=True, slots=True)
 class ScoreResult:
@@ -22,11 +24,18 @@ def compute(
     statistical_score: float,
     isolation_score: float,
     rule_triggered: bool,
+    rule_severity: str | None = None,
 ) -> ScoreResult:
     """Compute final risk score and determine severity.
 
     risk_score = (rule * RULE_WEIGHT) + (statistical * STAT_WEIGHT) + (isolation * ISO_WEIGHT)
-    Rule-triggered alerts are enforced to at least MEDIUM severity.
+
+    Severity is the **maximum** of:
+    - The severity derived from the weighted risk score thresholds
+    - The severity reported by the rule engine (if any)
+
+    This prevents the weighted scoring from downgrading a rule-engine
+    HIGH to MEDIUM.
     """
     rule_score = 1.0 if rule_triggered else 0.0
     weighted_score = (
@@ -46,10 +55,14 @@ def compute(
     else:
         severity = "NONE"
 
-    # If rule engine fired, enforce at least MEDIUM
+    # If rule engine fired, enforce at least MEDIUM (original floor)
     if rule_triggered and severity in ("NONE", "LOW"):
         severity = "MEDIUM"
         risk_score = max(risk_score, settings.ANOMALY_THRESHOLD_MEDIUM)
+
+    # Preserve rule severity: final = max(rule_severity, scoring_severity)
+    if rule_severity and _SEVERITY_ORDER.get(rule_severity, 0) > _SEVERITY_ORDER.get(severity, 0):
+        severity = rule_severity
 
     # Determine anomaly type label
     anomaly_type = _classify(statistical_score, isolation_score, rule_triggered)
@@ -75,3 +88,4 @@ def _classify(stat: float, iso: float, rule_hit: bool) -> str:
     if iso >= 0.15:
         parts.append("isolation_anomaly")
     return "+".join(parts) if parts else "normal"
+

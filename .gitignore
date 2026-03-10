@@ -28,6 +28,7 @@ dist/
 
 # SQLAlchemy DB files
 *.db
+*.md
 
 # Redis / queue state
 *.pid
@@ -74,3 +75,4 @@ secrets.yml
 
 # Allow git to track .env.example if present but ignore .env
 !.env.example
+!README.md

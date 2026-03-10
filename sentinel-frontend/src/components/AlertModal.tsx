@@ -211,13 +211,13 @@ function InfoRow({
   mono = false,
 }: {
   label: string;
-  value: string;
+  value: string | null | undefined;
   mono?: boolean;
 }) {
   return (
     <div>
       <p className="mb-1 text-xs uppercase tracking-wide text-zinc-500">{label}</p>
-      <p className={mono ? "font-mono text-xs text-zinc-300" : "text-sm text-zinc-300"}>{value}</p>
+      <p className={mono ? "font-mono text-xs text-zinc-300" : "text-sm text-zinc-300"}>{value ?? "—"}</p>
     </div>
   );
 }

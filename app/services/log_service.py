@@ -31,6 +31,10 @@ def _get_enqueue():
 async def ingest_log(session: AsyncSession, payload: LogCreate) -> Log:
     """Persist a log entry and enqueue it for asynchronous alert evaluation.
 
+    The ``enqueued`` flag tracks whether the log was successfully pushed
+    to the Redis queue.  Logs that fail enqueue (``enqueued=False``) are
+    swept up by the worker on startup so no log goes unprocessed.
+
     Returns the persisted ``Log``.
     """
     log = Log(
@@ -40,6 +44,7 @@ async def ingest_log(session: AsyncSession, payload: LogCreate) -> Log:
         message=payload.message,
         timestamp=payload.timestamp,
         ip_address=payload.ip_address,
+        enqueued=False,
         created_at=datetime.now(timezone.utc),
     )
     session.add(log)
@@ -56,8 +61,11 @@ async def ingest_log(session: AsyncSession, payload: LogCreate) -> Log:
                 "message": log.message,
                 "ip_address": log.ip_address,
             })
+            # Mark as successfully enqueued
+            log.enqueued = True
+            await session.commit()
         except Exception:
-            logger.exception("Failed to enqueue log %s – will be recovered", log.id)
+            logger.exception("Failed to enqueue log %s – will be recovered by worker sweep", log.id)
             try:
                 from app.metrics import increment_async
                 await increment_async("enqueue_failures")
@@ -65,3 +73,4 @@ async def ingest_log(session: AsyncSession, payload: LogCreate) -> Log:
                 pass
 
     return log
+
