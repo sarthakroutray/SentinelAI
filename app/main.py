@@ -72,7 +72,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="SentinelAI",
-    description="Phase 2 – Distributed event-driven security alerting",
+    description="Security log ingestion, anomaly scoring, and realtime monitoring",
     version="0.2.0",
     lifespan=lifespan,
 )
