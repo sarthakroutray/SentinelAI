@@ -15,9 +15,11 @@ interface ThroughputChartProps {
   timestamps: string[];
   logs: number[];
   alerts: number[];
+  chartWindow: number;
+  onWindowChange: (window: number) => void;
 }
 
-export default function ThroughputChart({ timestamps, logs, alerts }: ThroughputChartProps) {
+export default function ThroughputChart({ timestamps, logs, alerts, chartWindow, onWindowChange }: ThroughputChartProps) {
   const data = useMemo(
     () =>
       timestamps.map((timestamp, index) => ({
@@ -30,13 +32,25 @@ export default function ThroughputChart({ timestamps, logs, alerts }: Throughput
 
   return (
     <div className="rounded-lg border border-zinc-800 bg-zinc-900/90 p-4">
-      <div className="mb-3 flex items-center gap-2">
-        <p className="text-xs font-medium uppercase tracking-wider text-zinc-500">
-          Throughput (last minutes)
-        </p>
-        <span className="rounded border border-zinc-700 bg-zinc-950 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-zinc-300">
-          v1
-        </span>
+      <div className="mb-3 flex items-center justify-between">
+        <div className="flex items-center gap-2">
+          <p className="text-xs font-medium uppercase tracking-wider text-zinc-500">
+            Throughput (last {chartWindow} minutes)
+          </p>
+          <span className="rounded border border-zinc-700 bg-zinc-950 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-zinc-300">
+            v1
+          </span>
+        </div>
+        <select
+          value={chartWindow}
+          onChange={(e) => onWindowChange(Number(e.target.value))}
+          className="rounded-md border border-zinc-700 bg-zinc-950 px-2 py-1 text-xs text-zinc-200 outline-none transition-colors focus:border-zinc-500"
+        >
+          <option value={5}>Last 5 mins</option>
+          <option value={15}>Last 15 mins</option>
+          <option value={30}>Last 30 mins</option>
+          <option value={60}>Last 60 mins</option>
+        </select>
       </div>
       <div className="h-64 w-full">
         <ResponsiveContainer width="100%" height="100%">

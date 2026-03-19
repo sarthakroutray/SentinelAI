@@ -1,3 +1,9 @@
+# Environment variables (local development)
+.env
+.env.local
+.env.*.local
+.env.*.example
+
 # Python
 __pycache__/
 *.py[cod]
@@ -5,37 +11,45 @@ __pycache__/
 *.pyd
 *.pyc
 *.pdb
+*.egg-info/
+.eggs/
+
+# Testing & coverage
 *.coverage
 .coverage.*
 .pytest_cache/
-.cache/
 .mypy_cache/
-.env
-.env.*
+
+# Virtual environments
 venv/
 .venv/
 venv.bak/
+ENV/
+env/
 
-# pipenv / poetry
+# Python package management
 poetry.lock
 Pipfile.lock
+pip-log.txt
+pip-delete-this-directory.txt
 
 # Distribution / packaging
 build/
 dist/
-*.egg-info/
-.eggs/
+*.egg
 
-# SQLAlchemy DB files
+# Databases
 *.db
-*.md
-
-# Redis / queue state
-*.pid
-celerybeat-schedule
+*.sqlite
+*.sqlite3
 
 # OS
 .DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
 Thumbs.db
 
 # Editor directories and files
@@ -43,6 +57,10 @@ Thumbs.db
 .idea/
 *.sublime-workspace
 *.sublime-project
+*.swp
+*.swo
+*~
+.code-workspace
 
 # Logs
 logs/
@@ -50,29 +68,34 @@ logs/
 
 # Docker
 docker-compose.override.yml
-.env.*.local
+*.docker.env
 
 # Node / Frontend
 node_modules/
 .next/
-dist/
-build/
+out/
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
+.turbo/
 
-# Next.js environment
-.next/
-out/
+# Build artifacts
+dist/
+build/
 
-# Tailwind / cache
-.cache/
-
-# Optional: ignore sensitive local files
+# Sensitive files
 credentials.yml
 secrets.yml
+.ssh/
 
-# Allow git to track .env.example if present but ignore .env
+# IDE-specific
+.vscode/settings.json
+.idea/workspace.xml
+
+# Allow tracked files
 !.env.example
 !README.md
+!Architecture.md
+!CONTRIBUTING.md
+!API.md

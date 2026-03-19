@@ -39,6 +39,7 @@ export interface Metrics {
   alerts_created: number;
   retries: number;
   dlq_count: number;
+  enqueue_failures: number;
   high_risk_count: number;
   medium_risk_count: number;
   low_risk_count: number;

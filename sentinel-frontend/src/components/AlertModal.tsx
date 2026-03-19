@@ -98,7 +98,7 @@ export default function AlertModal({ alert, isOpen, onClose }: AlertModalProps) 
       <div className="absolute inset-0 bg-black/70" />
 
       <div
-        className={`relative z-10 w-full max-w-5xl rounded-xl border border-zinc-800 bg-zinc-950 shadow-2xl transition-all duration-200 ${
+        className={`relative z-10 w-full max-w-4xl rounded-xl border border-zinc-800 bg-zinc-950 shadow-2xl transition-all duration-200 ${
           visible ? "translate-y-0 scale-100" : "translate-y-2 scale-[0.98]"
         }`}
         onClick={(event) => event.stopPropagation()}
@@ -139,7 +139,7 @@ export default function AlertModal({ alert, isOpen, onClose }: AlertModalProps) 
                   <div className="h-2 w-36 overflow-hidden rounded-full bg-zinc-800">
                     <div
                       className={`h-full rounded-full ${riskBarColor(alert.risk_score)}`}
-                      style={{ width: `${Math.min(alert.risk_score * 100, 100)}%` }}
+                      style={{ width: `${Math.max(0, Math.min(alert.risk_score * 100, 100))}%` }}
                     />
                   </div>
                 </div>
@@ -172,8 +172,24 @@ export default function AlertModal({ alert, isOpen, onClose }: AlertModalProps) 
             )}
 
             {!isLoadingProfile && profileError && (
-              <div className="rounded-md border border-red-500/30 bg-red-500/10 px-3 py-2 text-xs text-red-300">
-                {profileError}
+              <div className="rounded-md border border-red-500/30 bg-red-500/10 px-3 py-2 text-xs text-red-300 flex items-center justify-between">
+                <span>{profileError}</span>
+                <button
+                  type="button"
+                  onClick={() => {
+                    const ip = alert.log?.ip_address;
+                    if (!ip) return;
+                    setProfileError(null);
+                    setIsLoadingProfile(true);
+                    fetchIpProfile(ip)
+                      .then(setIpProfile)
+                      .catch(() => setProfileError("Failed to load IP profile"))
+                      .finally(() => setIsLoadingProfile(false));
+                  }}
+                  className="rounded border border-red-500/50 hover:bg-red-500/20 px-2 py-1 transition-colors"
+                >
+                  Retry
+                </button>
               </div>
             )}
 

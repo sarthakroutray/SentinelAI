@@ -45,6 +45,7 @@ export default function DashboardPage() {
     logs: [],
     alerts: [],
   });
+  const [chartWindow, setChartWindow] = useState(15);
   const [health, setHealth] = useState<HealthStatus | null>(null);
 
   const offset = (currentPage - 1) * pageSize;
@@ -150,7 +151,7 @@ export default function DashboardPage() {
 
     const pollChartAndHealth = async () => {
       const [series, healthStatus] = await Promise.allSettled([
-        fetchMetricsTimeseries(15),
+        fetchMetricsTimeseries(chartWindow),
         fetchHealth(),
       ]);
 
@@ -167,7 +168,7 @@ export default function DashboardPage() {
       cancelled = true;
       clearInterval(id);
     };
-  }, []);
+  }, [chartWindow]);
 
   useEffect(() => {
     setCurrentPage(1);
@@ -215,6 +216,8 @@ export default function DashboardPage() {
             timestamps={timeseries.timestamps}
             logs={timeseries.logs}
             alerts={timeseries.alerts}
+            chartWindow={chartWindow}
+            onWindowChange={setChartWindow}
           />
         </section>
       </ErrorBoundary>

@@ -8,12 +8,23 @@ const cards: { key: keyof Metrics; label: string; accent: string }[] = [
   { key: "logs_received", label: "Logs Received", accent: "text-emerald-400" },
   { key: "alerts_created", label: "Alerts Created", accent: "text-red-400" },
   { key: "retries", label: "Retries", accent: "text-yellow-400" },
+  { key: "enqueue_failures", label: "Enqueue Failures", accent: "text-purple-400" },
   { key: "dlq_count", label: "DLQ Count", accent: "text-orange-400" },
 ];
 
 export default function MetricsCards({ metrics }: MetricsCardsProps) {
+  if (!metrics) {
+    return (
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-5">
+        {[...Array(5)].map((_, i) => (
+          <div key={i} className="h-24 rounded-lg border border-zinc-800 bg-zinc-900/90 animate-pulse" />
+        ))}
+      </div>
+    );
+  }
+
   return (
-    <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
+    <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-5">      
       {cards.map(({ key, label, accent }) => (
         <div
           key={key}
@@ -28,7 +39,7 @@ export default function MetricsCards({ metrics }: MetricsCardsProps) {
         </div>
       ))}
 
-      <div className="rounded-lg border border-zinc-800 bg-zinc-900/90 p-5 sm:col-span-2 lg:col-span-4">
+      <div className="rounded-lg border border-zinc-800 bg-zinc-900/90 p-5 sm:col-span-2 lg:col-span-5">
         <div className="flex items-center gap-2">
           <p className="text-xs font-medium uppercase tracking-wider text-zinc-500">
             Severity Distribution

@@ -49,10 +49,22 @@ export default function AlertTable({
               </td>
 
               {/* IP */}
-              <td className="whitespace-nowrap px-4 py-3 font-mono text-xs text-zinc-300">
-                {alert.log?.ip_address ?? "—"}
+              <td className="whitespace-nowrap px-4 py-3 font-mono text-xs">
+                {alert.log?.ip_address ? (
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      navigator.clipboard.writeText(alert.log!.ip_address!);
+                    }}
+                    className="rounded border border-zinc-700 bg-zinc-800/50 px-2 py-1 text-blue-300 hover:bg-zinc-700 transition-colors"
+                    title="Copy IP"
+                  >
+                    {alert.log.ip_address}
+                  </button>
+                ) : (
+                  <span className="rounded bg-zinc-800 px-2 py-1 text-zinc-500">No IP</span>
+                )}
               </td>
-
               {/* Severity */}
               <td className="px-4 py-3">
                 <RiskBadge severity={alert.severity} />
@@ -65,9 +77,8 @@ export default function AlertTable({
                     {alert.risk_score.toFixed(2)}
                   </span>
                   <div className="h-1.5 w-24 overflow-hidden rounded-full bg-zinc-800">
-                    <div
-                      className={`h-full rounded-full transition-all ${riskBarColor(alert.risk_score)}`}
-                      style={{ width: `${Math.min(alert.risk_score * 100, 100)}%` }}
+                    <div className={"h-full rounded-full transition-all " + riskBarColor(alert.risk_score)}
+                      style={{ width: `${Math.max(0, Math.min(alert.risk_score * 100, 100))}%` }}
                     />
                   </div>
                 </div>
