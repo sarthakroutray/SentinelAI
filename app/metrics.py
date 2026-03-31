@@ -10,6 +10,7 @@ from datetime import datetime, timedelta, timezone
 from fastapi import APIRouter, Depends
 from sqlalchemy import case, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.sql.elements import ColumnElement
 
 from app.database import get_session
 from app.models.alert import Alert
@@ -182,8 +183,9 @@ async def metrics_timeseries(
     now = datetime.now(timezone.utc).replace(second=0, microsecond=0)
     start = now - timedelta(minutes=window - 1)
 
-    log_bucket = func.date_trunc("minute", Log.created_at)
-    alert_bucket = func.date_trunc("minute", Alert.created_at)
+    dialect_name = session.bind.dialect.name if session.bind is not None else ""
+    log_bucket = _minute_bucket_expr(dialect_name, Log.created_at)
+    alert_bucket = _minute_bucket_expr(dialect_name, Alert.created_at)
 
     log_stmt = (
         select(log_bucket.label("bucket"), func.count(Log.id).label("count"))
@@ -228,3 +230,10 @@ def _normalise_bucket(value: object) -> datetime:
     if dt.tzinfo is None:
         return dt.replace(tzinfo=timezone.utc)
     return dt.astimezone(timezone.utc)
+
+
+def _minute_bucket_expr(dialect_name: str, column: ColumnElement[datetime]) -> ColumnElement[object]:
+    """Return a SQL expression that rounds timestamps down to the minute."""
+    if dialect_name == "sqlite":
+        return func.strftime("%Y-%m-%d %H:%M:00", column)
+    return func.date_trunc("minute", column)

@@ -46,7 +46,11 @@ class Settings(BaseSettings):
     # Model store – Redis key TTL for persisted model artifact (0 = no expiry)
     MODEL_ARTIFACT_TTL: int = 0
 
-    model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
+    model_config = {
+        "env_file": ".env",
+        "env_file_encoding": "utf-8",
+        "extra": "ignore",
+    }
 
     @field_validator("CORS_ORIGINS", mode="before")
     @classmethod

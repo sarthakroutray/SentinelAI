@@ -33,8 +33,13 @@ class BaselineStore:
     # Maximum fraction of total buffer any single IP may occupy
     _MAX_PER_IP_FRACTION: float = 0.05
 
-    def __init__(self, max_size: int | None = None) -> None:
+    def __init__(
+        self,
+        max_size: int | None = None,
+        feature_dim: int | None = None,
+    ) -> None:
         self._max_size = max_size or settings.BASELINE_BUFFER_MAX
+        self._feature_dim = feature_dim
         self._buffer: deque[list[float]] = deque(maxlen=self._max_size)
         # Parallel deque tracking which IP each vector came from (None = unknown)
         self._ip_buffer: deque[str | None] = deque(maxlen=self._max_size)
@@ -46,15 +51,16 @@ class BaselineStore:
         """Append a feature vector to the baseline (thread-safe).
 
         Args:
-            features: Feature vector of length FEATURE_DIM.
+            features: Feature vector. When ``feature_dim`` is configured,
+                the vector must match that length.
             ip: Source IP of the log, used to enforce per-IP quota.
 
         Raises:
-            ValueError: If features doesn't have exactly FEATURE_DIM elements.
+            ValueError: If features doesn't match the configured length.
         """
-        if len(features) != FEATURE_DIM:
+        if self._feature_dim is not None and len(features) != self._feature_dim:
             raise ValueError(
-                f"Feature vector must have exactly {FEATURE_DIM} elements, "
+                f"Feature vector must have exactly {self._feature_dim} elements, "
                 f"got {len(features)}"
             )
 
@@ -88,4 +94,4 @@ class BaselineStore:
 
 
 # Module-level singleton
-baseline_store = BaselineStore()
+baseline_store = BaselineStore(feature_dim=FEATURE_DIM)
