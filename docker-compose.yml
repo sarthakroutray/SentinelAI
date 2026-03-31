@@ -1,25 +1,31 @@
 services:
   db:
     image: postgres:16-alpine
-    ports:
-      - "5432:5432"
+    # !! Do NOT expose port 5432 to the host in production !!
+    # ports:
+    #   - "5432:5432"
     environment:
-      - POSTGRES_USER=sentinel
-      - POSTGRES_PASSWORD=sentinel_password
-      - POSTGRES_DB=sentinelai
+      - POSTGRES_USER=${POSTGRES_USER:-sentinel}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}   # No default — must be set in .env
+      - POSTGRES_DB=${POSTGRES_DB:-sentinelai}
     volumes:
       - pgdata:/var/lib/postgresql/data
     restart: unless-stopped
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U sentinel -d sentinelai"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-sentinel} -d ${POSTGRES_DB:-sentinelai}"]
       interval: 5s
       timeout: 5s
       retries: 10
 
   redis:
     image: redis:7-alpine
-    ports:
-      - "6379:6379"
+    # Enable AOF persistence so queue state survives container restarts
+    command: redis-server --appendonly yes --appendfsync everysec --maxmemory 512mb --maxmemory-policy noeviction
+    volumes:
+      - redisdata:/data
+    # !! Do NOT expose port 6379 to the host in production !!
+    # ports:
+    #   - "6379:6379"
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
@@ -29,13 +35,14 @@ services:
 
   backend:
     build: .
-    ports:
-      - "8000:8000"
+    # Port NOT exposed to host — only reachable via Nginx
+    expose:
+      - "8000"
     env_file:
       - .env
     environment:
       - REDIS_URL=redis://redis:6379/0
-      - DATABASE_URL=postgresql+asyncpg://sentinel:sentinel_password@db:5432/sentinelai
+      - DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER:-sentinel}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-sentinelai}
     depends_on:
       redis:
         condition: service_healthy
@@ -50,7 +57,7 @@ services:
       - .env
     environment:
       - REDIS_URL=redis://redis:6379/0
-      - DATABASE_URL=postgresql+asyncpg://sentinel:sentinel_password@db:5432/sentinelai
+      - DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER:-sentinel}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-sentinelai}
     depends_on:
       redis:
         condition: service_healthy
@@ -58,20 +65,39 @@ services:
         condition: service_healthy
     restart: unless-stopped
     deploy:
-      replicas: 1
+      replicas: 1   # MUST remain 1 — ML state is single-process (see Architecture.md)
 
   frontend:
     build:
       context: ./sentinel-frontend
       dockerfile: Dockerfile
       args:
-        NEXT_PUBLIC_API_BASE: http://localhost:8000
-    ports:
-      - "3000:3000"
+        # NEXT_PUBLIC_API_BASE is intentionally left empty here.
+        # API calls are proxied through Next.js server rewrites, which read
+        # the server-side API_BASE env var at runtime (not at build time).
+        NEXT_PUBLIC_API_BASE: ""
+    expose:
+      - "3000"
+    environment:
+      - API_BASE=http://backend:8000   # server-side env read by Next.js rewrites
     depends_on:
       backend:
         condition: service_started
     restart: unless-stopped
 
+  nginx:
+    image: nginx:1.26-alpine
+    ports:
+      - "80:80"
+      # - "443:443"   # Uncomment after adding TLS certs (see nginx/nginx.conf)
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+      # - /etc/letsencrypt:/etc/letsencrypt:ro   # Uncomment for TLS
+    depends_on:
+      - backend
+      - frontend
+    restart: unless-stopped
+
 volumes:
   pgdata:
+  redisdata:   # Persists Redis AOF data across container restarts

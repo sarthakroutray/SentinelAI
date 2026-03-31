@@ -71,8 +71,8 @@ def load_config(path: str | Path) -> AgentConfig:
     request_timeout = float(sentinel_raw.get("request_timeout", DEFAULT_REQUEST_TIMEOUT))
     max_backoff = float(sentinel_raw.get("max_backoff", DEFAULT_MAX_BACKOFF))
 
-    if batch_size < 1 or batch_size > 20:
-        raise ValueError("'sentinel.batch_size' must be between 1 and 20")
+    if batch_size < 1 or batch_size > 5000:
+        raise ValueError("'sentinel.batch_size' must be between 1 and 5000")
     if flush_interval <= 0:
         raise ValueError("'sentinel.flush_interval' must be greater than 0")
     if request_timeout <= 0:

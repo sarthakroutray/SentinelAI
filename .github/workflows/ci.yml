@@ -1,0 +1,170 @@
+name: CI
+
+on:
+  push:
+    branches: ["main", "develop", "feature/**"]
+  pull_request:
+    branches: ["main", "develop"]
+
+jobs:
+  # ── Backend: Python tests + dependency audit ─────────────────────────────
+  backend:
+    name: Backend (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.12"]
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: sentinel
+          POSTGRES_PASSWORD: ci_test_password
+          POSTGRES_DB: sentinelai_test
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+        ports:
+          - 5432:5432
+
+      redis:
+        image: redis:7-alpine
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 5
+        ports:
+          - 6379:6379
+
+    env:
+      DATABASE_URL: postgresql+asyncpg://sentinel:ci_test_password@localhost:5432/sentinelai_test
+      REDIS_URL: redis://localhost:6379/0
+      API_KEY: ""
+      DEBUG: "true"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pytest pytest-asyncio aiosqlite coverage
+
+      - name: Run tests with coverage
+        run: |
+          coverage run -m pytest tests/ -v --tb=short --strict-markers
+          coverage report --fail-under=60
+          coverage xml -o coverage.xml
+
+      - name: Upload coverage report
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: coverage.xml
+          retention-days: 7
+
+      - name: Dependency vulnerability scan (pip-audit)
+        run: |
+          pip install pip-audit
+          pip-audit -r requirements.txt --desc --format markdown 2>&1 | tee pip-audit-results.md || true
+          # Report vulnerabilities but don't fail the build yet; treat as advisory
+          echo "::notice::See pip-audit-results.md for dependency advisory"
+
+      - name: Upload pip-audit results
+        uses: actions/upload-artifact@v4
+        with:
+          name: pip-audit-results
+          path: pip-audit-results.md
+          retention-days: 7
+
+  # ── Frontend: build + lint + npm audit ──────────────────────────────────
+  frontend:
+    name: Frontend (Node.js)
+    runs-on: ubuntu-latest
+
+    defaults:
+      run:
+        working-directory: sentinel-frontend
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: sentinel-frontend/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Build
+        run: npm run build
+        env:
+          # API_BASE is server-side only — not needed for CI build
+          API_BASE: http://localhost:8000
+
+      - name: Dependency vulnerability scan (npm audit)
+        run: |
+          npm audit --audit-level=high 2>&1 | tee npm-audit-results.txt || true
+          echo "::notice::See npm-audit-results.txt for dependency advisory"
+
+      - name: Upload npm-audit results
+        uses: actions/upload-artifact@v4
+        with:
+          name: npm-audit-results
+          path: sentinel-frontend/npm-audit-results.txt
+          retention-days: 7
+
+  # ── Docker: verify images build successfully ─────────────────────────────
+  docker-build:
+    name: Docker Build Check
+    runs-on: ubuntu-latest
+    needs: [backend, frontend]
+    # Only run on pushes to main/develop to save CI minutes
+    if: github.event_name == 'push'
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build backend image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./Dockerfile
+          push: false
+          tags: sentinel-backend:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Build frontend image
+        uses: docker/build-push-action@v5
+        with:
+          context: ./sentinel-frontend
+          file: ./sentinel-frontend/Dockerfile
+          push: false
+          tags: sentinel-frontend:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

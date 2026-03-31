@@ -45,8 +45,15 @@ class RuleResult:
     reason: str
 
 
-_HIGH_KEYWORDS = ("failed login", "unauthorized")
-
+_HIGH_KEYWORDS = (
+    "failed login", 
+    "unauthorized",
+    "script",     # XSS
+    "or '1'='1",  # SQLi
+    "passwd",     # LFI / Path Traversal
+    ".git/",      # Info disclosure
+    "wp-config"   # LFI
+)
 
 def evaluate(log_level: str, message: str, ip_address: str | None) -> RuleResult | None:
     """Run rule checks against a single log entry.

@@ -12,14 +12,33 @@ import threading
 import time
 from collections import defaultdict, deque
 from dataclasses import dataclass, field
+from typing import TypedDict
 
 from app.config import settings
+
+# Hard cap on per-IP and global event deques to prevent unbounded memory growth
+# under sustained high-traffic bursts.  Entries are also evicted by sliding
+# window time cutoff, so normal workloads will never hit these limits.
+_MAX_PER_IP_EVENTS: int = 10_000
+_MAX_GLOBAL_EVENTS: int = 50_000
+
+
+class ProfileStats(TypedDict):
+    """Type-safe return shape from ProfileStore.record()."""
+
+    ip_rate: int
+    ip_error_ratio: float
+    global_rate: int
+    global_error_ratio: float
 
 
 @dataclass
 class _IpProfile:
     """Tracks per-IP (timestamp, is_error) events within a sliding window."""
-    events: deque = field(default_factory=lambda: deque())  # deque of (float, bool)
+    # maxlen prevents unbounded growth under sustained traffic bursts
+    events: deque = field(
+        default_factory=lambda: deque(maxlen=_MAX_PER_IP_EVENTS)
+    )
 
 
 class ProfileStore:
@@ -30,9 +49,12 @@ class ProfileStore:
         self._profiles: dict[str, _IpProfile] = defaultdict(_IpProfile)
         self._lock = threading.Lock()
         # Global rolling events for spike detection: (timestamp, is_error) tuples
-        self._global_events: deque[tuple[float, bool]] = deque()
+        # maxlen prevents unbounded memory growth during traffic bursts
+        self._global_events: deque[tuple[float, bool]] = deque(
+            maxlen=_MAX_GLOBAL_EVENTS
+        )
 
-    def record(self, ip: str | None, is_error: bool) -> dict:
+    def record(self, ip: str | None, is_error: bool) -> ProfileStats:
         """Record an event and return current statistics snapshot."""
         now = time.monotonic()
         with self._lock:
@@ -59,28 +81,28 @@ class ProfileStore:
             global_errors = sum(1 for _, err in self._global_events if err)
             global_error_ratio = global_errors / max(global_rate, 1)
 
-            return {
-                "ip_rate": ip_rate,
-                "ip_error_ratio": ip_error_ratio,
-                "global_rate": global_rate,
-                "global_error_ratio": global_error_ratio,
-            }
+            return ProfileStats(
+                ip_rate=ip_rate,
+                ip_error_ratio=ip_error_ratio,
+                global_rate=global_rate,
+                global_error_ratio=global_error_ratio,
+            )
 
     def _evict_global(self, now: float) -> None:
         cutoff = now - self._window
         while self._global_events and self._global_events[0][0] < cutoff:
             self._global_events.popleft()
 
-    def _global_snapshot(self) -> dict:
+    def _global_snapshot(self) -> ProfileStats:
         global_rate = len(self._global_events)
         global_errors = sum(1 for _, err in self._global_events if err)
         global_error_ratio = global_errors / max(global_rate, 1)
-        return {
-            "ip_rate": 0,
-            "ip_error_ratio": 0.0,
-            "global_rate": global_rate,
-            "global_error_ratio": global_error_ratio,
-        }
+        return ProfileStats(
+            ip_rate=0,
+            ip_error_ratio=0.0,
+            global_rate=global_rate,
+            global_error_ratio=global_error_ratio,
+        )
 
     def clear(self) -> None:
         with self._lock:

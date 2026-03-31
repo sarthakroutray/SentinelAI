@@ -31,9 +31,9 @@ def detect_log_level(message: str) -> str:
     return "INFO"
 
 
-def extract_ipv4(message: str) -> str:
+def extract_ipv4(message: str) -> str | None:
     match = IPV4_RE.search(message)
-    return match.group(0) if match else "127.0.0.1"
+    return match.group(0) if match else None
 
 
 def parse_timestamp(message: str) -> str:
@@ -61,12 +61,12 @@ def parse_timestamp(message: str) -> str:
     return now.isoformat()
 
 
-def parse_log_line(source: str, line: str) -> dict[str, str]:
+def parse_log_line(source: str, line: str) -> dict[str, str | None]:
     message = line.strip()
     return {
         "source": source,
         "log_level": detect_log_level(message),
         "message": message,
         "timestamp": parse_timestamp(message),
-        "ip_address": extract_ipv4(message),
+        "ip_address": extract_ipv4(message),  # None when no IP found
     }

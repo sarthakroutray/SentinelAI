@@ -13,6 +13,7 @@ from sqlalchemy.pool import StaticPool
 os.environ.setdefault("DATABASE_URL", "postgresql+asyncpg://test:test@localhost:5432/sentinel_test")
 os.environ.setdefault("REDIS_URL", "redis://localhost:6379/0")
 os.environ.setdefault("API_KEY", "")  # Auth disabled in tests
+os.environ.setdefault("DEBUG", "true")  # Prevent startup gate from firing
 
 from app.api.alerts import router as alerts_router
 from app.api.health import router as health_router
@@ -32,14 +33,6 @@ import app.metrics as metrics_mod
 TEST_DATABASE_URL = "sqlite+aiosqlite:///:memory:"
 
 
-def _run_async(coro):
-    loop = asyncio.new_event_loop()
-    try:
-        return loop.run_until_complete(coro)
-    finally:
-        loop.close()
-
-
 @pytest.fixture(scope="session")
 def test_engine():
     engine = create_async_engine(
@@ -55,20 +48,20 @@ def test_engine():
         cursor.execute("PRAGMA foreign_keys=ON")
         cursor.close()
 
-    async def _setup():
-        async with engine.begin() as conn:
-            await conn.run_sync(Base.metadata.create_all)
-
-    _run_async(_setup())
-
+    asyncio.run(_setup(engine))
     yield engine
+    asyncio.run(_teardown(engine))
 
-    async def _teardown():
-        async with engine.begin() as conn:
-            await conn.run_sync(Base.metadata.drop_all)
-        await engine.dispose()
 
-    _run_async(_teardown())
+async def _setup(engine):
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+
+
+async def _teardown(engine):
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.drop_all)
+    await engine.dispose()
 
 
 @pytest.fixture(scope="session")
@@ -78,13 +71,7 @@ def async_session_maker(test_engine):
 
 @pytest.fixture(autouse=True)
 def reset_state(async_session_maker):
-    async def _reset_db():
-        async with async_session_maker() as session:
-            await session.execute(text("DELETE FROM alerts"))
-            await session.execute(text("DELETE FROM logs"))
-            await session.commit()
-
-    _run_async(_reset_db())
+    asyncio.run(_reset_db(async_session_maker))
     rule_engine._ip_tracker._buckets.clear()
 
     # Reset metrics counters
@@ -105,13 +92,20 @@ def reset_state(async_session_maker):
     log_service_mod._enqueue = None
 
 
+async def _reset_db(async_session_maker):
+    async with async_session_maker() as session:
+        await session.execute(text("DELETE FROM alerts"))
+        await session.execute(text("DELETE FROM logs"))
+        await session.commit()
+
+
 @pytest.fixture
 def async_db_session(async_session_maker) -> Generator[AsyncSession, None, None]:
     session = async_session_maker()
     try:
         yield session
     finally:
-        _run_async(session.close())
+        asyncio.run(session.close())
 
 
 @pytest.fixture

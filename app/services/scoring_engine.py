@@ -39,9 +39,9 @@ def compute(
     """
     rule_score = 1.0 if rule_triggered else 0.0
     weighted_score = (
-        settings.RULE_WEIGHT * rule_score
-        + settings.STAT_WEIGHT * statistical_score
-        + settings.ISO_WEIGHT * isolation_score
+        (settings.RULE_WEIGHT * rule_score)
+        + (settings.STAT_WEIGHT * statistical_score)
+        + (settings.ISO_WEIGHT * isolation_score)
     )
     risk_score = min(1.0, max(0.0, round(weighted_score, 4)))
 

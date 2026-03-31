@@ -15,6 +15,23 @@ interface UseDashboardWebSocketOptions {
 const BASE_RETRY_MS = 1_000;
 const MAX_RETRY_MS = 30_000;
 
+/**
+ * Derives the WebSocket URL from the current page origin so it works
+ * on any deployment target without build-time constants.
+ *
+ * BEFORE: const httpBase = process.env.NEXT_PUBLIC_API_BASE ?? "http://localhost:8000"
+ *         ↑ baked at build time — broke on non-localhost deployments.
+ *
+ * AFTER:  Uses window.location.origin (same host as the frontend), then
+ *         connects to /ws-proxy/ws/dashboard, which Nginx rewrites to the
+ *         backend WebSocket endpoint.
+ */
+function getDashboardWsUrl(): string {
+  if (typeof window === "undefined") return "ws://localhost/ws-proxy/ws/dashboard";
+  const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
+  return `${proto}//${window.location.host}/ws-proxy/ws/dashboard`;
+}
+
 export function useDashboardWebSocket({ onAlert, onMetrics }: UseDashboardWebSocketOptions) {
   const wsRef = useRef<WebSocket | null>(null);
   const shouldRunRef = useRef(true);
@@ -45,12 +62,7 @@ export function useDashboardWebSocket({ onAlert, onMetrics }: UseDashboardWebSoc
       emitStatus("connecting");
       if (!shouldRunRef.current) return;
 
-      const httpBase = process.env.NEXT_PUBLIC_API_BASE ?? "http://localhost:8000";
-      const wsBase = httpBase.startsWith("https://")
-        ? httpBase.replace("https://", "wss://")
-        : httpBase.replace("http://", "ws://");
-
-      const socket = new WebSocket(`${wsBase}/ws/dashboard`);
+      const socket = new WebSocket(getDashboardWsUrl());
       wsRef.current = socket;
 
       socket.onopen = () => {

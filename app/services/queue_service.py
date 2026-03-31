@@ -1,4 +1,13 @@
-"""Redis-backed queue service with retry, DLQ, and crash recovery."""
+"""Redis-backed queue service with retry, DLQ, and crash recovery.
+
+Changes from baseline:
+- QueueMessage TypedDict documents the internal message structure.
+- enqueue() now checks queue depth against MAX_QUEUE_DEPTH and raises
+  QueueFullError (HTTP 429) when the high-water mark is reached.
+- publish_dashboard_event() swallows Redis errors with a single WARNING
+  log rather than propagating exceptions into the worker async task.
+- listen_dashboard_events() uses exponential backoff on retry.
+"""
 
 from __future__ import annotations
 
@@ -7,9 +16,10 @@ import json
 import logging
 import time
 from collections.abc import Awaitable, Callable
-from typing import Any
+from typing import Any, TypedDict
 
 from app.redis_pool import get_redis
+from app.config import settings
 
 logger = logging.getLogger(__name__)
 
@@ -24,19 +34,53 @@ MAX_RETRIES = 3
 VISIBILITY_TIMEOUT = 30  # seconds
 
 
+class QueueFull(Exception):
+    """Raised when the Redis queue exceeds MAX_QUEUE_DEPTH."""
+
+
+class QueueMessage(TypedDict, total=False):
+    """Internal structure of a Redis queue message.
+
+    ``total=False`` because not all fields are present in every lifecycle stage.
+    """
+
+    payload: dict[str, Any]
+    retry_count: int
+    enqueued_at: float
+    started_processing_at: float
+    process_after: float
+    moved_to_dlq_at: float
+    # Internal sentinel carrying the exact raw JSON for lrem matching
+    __raw: str
+
+
 async def enqueue(payload: dict[str, Any]) -> None:
-    """Push a log payload onto the main queue."""
+    """Push a log payload onto the main queue.
+
+    Raises:
+        QueueFull: When the queue depth exceeds ``settings.MAX_QUEUE_DEPTH``.
+            Callers should translate this to an HTTP 429 response.
+    """
+    redis = await get_redis()
+
+    # Backpressure guard — prevent unbounded Redis memory growth
+    current_depth = await redis.llen(MAIN_QUEUE)
+    if current_depth >= settings.MAX_QUEUE_DEPTH:
+        raise QueueFull(
+            f"Queue depth {current_depth} >= MAX_QUEUE_DEPTH {settings.MAX_QUEUE_DEPTH}. "
+            "Rejecting ingest request to protect system stability."
+        )
+
     message = json.dumps({
         "payload": payload,
         "retry_count": 0,
         "enqueued_at": time.time(),
     })
-    redis = await get_redis()
     await redis.lpush(MAIN_QUEUE, message)
-    logger.info("Enqueued log payload onto %s", MAIN_QUEUE)
+    logger.debug("Enqueued log payload onto %s (depth=%d)", MAIN_QUEUE, current_depth + 1)
 
 
-async def dequeue() -> dict[str, Any] | None:
+async def dequeue() -> QueueMessage | None:
     """Atomically move one item from main queue to processing queue.
 
     Returns the parsed message dict, or None if the queue is empty.
@@ -52,7 +96,7 @@ async def dequeue() -> dict[str, Any] | None:
     )
     if raw is None:
         return None
-    parsed = json.loads(raw)
+    parsed: dict[str, Any] = json.loads(raw)
 
     # Tag with processing start time and replace entry in processing queue
     parsed["started_processing_at"] = time.time()
@@ -66,28 +110,25 @@ async def dequeue() -> dict[str, Any] | None:
 
     # Preserve the exact bytes for acknowledge/retry_or_dlq matching
     parsed["__raw"] = updated_raw
-    return parsed
+    return parsed  # type: ignore[return-value]
 
 
-async def acknowledge(message: dict[str, Any]) -> None:
+async def acknowledge(message: QueueMessage) -> None:
     """Remove a successfully processed message from the processing queue."""
     redis = await get_redis()
-    # Use the preserved original bytes when available for exact matching.
     raw = message.get("__raw")
     if raw is None:
         raw = json.dumps({k: v for k, v in message.items() if not k.startswith("__")})
     await redis.lrem(PROCESSING_QUEUE, 1, raw)
-    logger.info("Acknowledged message from processing queue")
 
 
-async def retry_or_dlq(message: dict[str, Any]) -> bool:
+async def retry_or_dlq(message: QueueMessage) -> bool:
     """Re-enqueue with incremented retry count, or move to DLQ.
 
     Returns True if requeued, False if moved to DLQ.
     """
     from app.metrics import increment_async
 
-    # Strip internal sentinel and work on a clean copy.
     clean = {k: v for k, v in message.items() if not k.startswith("__")}
     raw_original = message.get("__raw")
     if raw_original is None:
@@ -96,7 +137,6 @@ async def retry_or_dlq(message: dict[str, Any]) -> bool:
     clean["retry_count"] = clean.get("retry_count", 0) + 1
 
     redis = await get_redis()
-    # Remove from processing queue using the original bytes.
     await redis.lrem(PROCESSING_QUEUE, 1, raw_original)
 
     if clean["retry_count"] >= MAX_RETRIES:
@@ -106,7 +146,6 @@ async def retry_or_dlq(message: dict[str, Any]) -> bool:
         logger.warning("Message moved to DLQ after %d retries", clean["retry_count"])
         return False
 
-    # Exponential backoff: 2^retry seconds (simple in-message delay)
     clean["process_after"] = time.time() + (2 ** clean["retry_count"])
     await redis.lpush(MAIN_QUEUE, json.dumps(clean))
     await increment_async("retries")
@@ -118,10 +157,7 @@ async def recover_processing_queue() -> int:
     """Move *stale* items from the processing queue back to the main queue.
 
     Only requeues messages whose ``started_processing_at`` is older than
-    ``VISIBILITY_TIMEOUT`` seconds ago, preventing work-stealing from
-    workers that are still actively processing a message.
-
-    Called on worker startup for crash recovery.
+    ``VISIBILITY_TIMEOUT`` seconds ago.  Called on worker startup.
     Returns the number of recovered messages.
     """
     redis = await get_redis()
@@ -135,7 +171,6 @@ async def recover_processing_queue() -> int:
         try:
             parsed = json.loads(raw)
         except (json.JSONDecodeError, TypeError):
-            # Corrupt entry – move it to main queue for reprocessing
             await redis.lrem(PROCESSING_QUEUE, 1, raw)
             await redis.lpush(MAIN_QUEUE, raw)
             count += 1
@@ -148,12 +183,15 @@ async def recover_processing_queue() -> int:
             count += 1
 
     if count:
-        logger.info("Recovered %d stale messages from processing queue (visibility_timeout=%ds)", count, VISIBILITY_TIMEOUT)
+        logger.info(
+            "Recovered %d stale messages from processing queue (visibility_timeout=%ds)",
+            count, VISIBILITY_TIMEOUT,
+        )
     return count
 
 
 async def dlq_list() -> list[dict[str, Any]]:
-    """Return all items currently in the dead-letter queue (for inspection)."""
+    """Return all items currently in the dead-letter queue."""
     redis = await get_redis()
     items = await redis.lrange(DLQ, 0, -1)
     return [json.loads(item) for item in items]
@@ -206,9 +244,20 @@ async def get_last_model_retrain() -> str | None:
 
 
 async def publish_dashboard_event(event: dict[str, Any]) -> None:
-    """Publish realtime dashboard event to Redis Pub/Sub."""
-    redis = await get_redis()
-    await redis.publish(DASHBOARD_EVENTS_CHANNEL, json.dumps(event))
+    """Publish realtime dashboard event to Redis Pub/Sub.
+
+    Errors are logged as WARNING rather than raised, so a transient Redis
+    failure does not propagate as an unhandled worker task exception.
+    """
+    try:
+        redis = await get_redis()
+        await redis.publish(DASHBOARD_EVENTS_CHANNEL, json.dumps(event))
+    except Exception:
+        logger.warning(
+            "Failed to publish dashboard event (type=%s) — Redis may be unavailable",
+            event.get("type", "unknown"),
+            exc_info=True,
+        )
 
 
 async def listen_dashboard_events(
@@ -216,25 +265,35 @@ async def listen_dashboard_events(
 ) -> None:
     """Consume dashboard events via async Pub/Sub iterator.
 
-    Automatically retries subscription on transient Redis errors.
+    Uses exponential backoff on retry (max 60 s) to avoid thundering-herd
+    reconnection storms after Redis becomes available again.
     """
+    retry_attempt = 0
     while True:
         pubsub = None
         try:
             redis = await get_redis()
             pubsub = redis.pubsub()
             await pubsub.subscribe(DASHBOARD_EVENTS_CHANNEL)
+            retry_attempt = 0  # reset backoff on successful connection
 
             async for message in pubsub.listen():
                 if message.get("type") == "message":
                     raw_data = message.get("data")
                     if isinstance(raw_data, str):
                         await handler(json.loads(raw_data))
+
         except asyncio.CancelledError:
             raise
         except Exception:
-            logger.exception("Dashboard Pub/Sub listener error; retrying")
-            await asyncio.sleep(2)
+            retry_attempt += 1
+            backoff = min(2 ** retry_attempt, 60)
+            logger.warning(
+                "Dashboard Pub/Sub listener error (attempt %d); retrying in %ds",
+                retry_attempt, backoff,
+                exc_info=True,
+            )
+            await asyncio.sleep(backoff)
         finally:
             if pubsub is not None:
                 try:

@@ -1,4 +1,16 @@
-const API_BASE = process.env.NEXT_PUBLIC_API_BASE ?? "http://localhost:8000";
+/**
+ * API client — all calls use relative /api-proxy/* paths so they are
+ * rewritten server-side by Next.js to the real backend URL.
+ *
+ * BEFORE: const API_BASE = process.env.NEXT_PUBLIC_API_BASE ?? "http://localhost:8000"
+ *         ↑ baked into the bundle at build time, unusable for staging/prod.
+ *
+ * AFTER:  All paths are relative ("/api-proxy/...").
+ *         next.config.ts rewrites them to `${API_BASE}/...` at request time,
+ *         where API_BASE is a server-side env var injected at container start.
+ */
+
+const API_PROXY = "/api-proxy";
 
 /* ── Types ─────────────────────────────────────────────────────────── */
 
@@ -78,7 +90,7 @@ export interface IpProfile {
 /* ── Fetchers ──────────────────────────────────────────────────────── */
 
 async function get<T>(path: string): Promise<T> {
-  const res = await fetch(`${API_BASE}${path}`, { cache: "no-store" });
+  const res = await fetch(`${API_PROXY}${path}`, { cache: "no-store" });
   if (!res.ok) {
     throw new Error(`API ${path} returned ${res.status}`);
   }
@@ -107,7 +119,7 @@ export async function fetchQueues(): Promise<Queues> {
 }
 
 export async function fetchIpProfile(ip: string): Promise<IpProfile | null> {
-  const res = await fetch(`${API_BASE}/ip/${encodeURIComponent(ip)}/profile`, {
+  const res = await fetch(`${API_PROXY}/ip/${encodeURIComponent(ip)}/profile`, {
     cache: "no-store",
   });
 

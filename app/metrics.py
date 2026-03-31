@@ -97,8 +97,12 @@ async def snapshot_async() -> dict[str, int]:
 
 _metrics_cache: MetricsResponse | None = None
 _metrics_cache_at: float = 0.0
-_METRICS_CACHE_TTL = 4.0  # seconds
+# 15 s TTL: broadcast loop fires every 5 s but only hits the DB every third
+# cycle.  WebSocket clients see at most 15 s stale aggregate counts — acceptable
+# for a security dashboard that already receives realtime per-alert events.
+_METRICS_CACHE_TTL = 15.0
 _metrics_cache_lock: asyncio.Lock | None = None
+
 
 
 @router.get("/metrics", response_model=MetricsResponse)

@@ -1,18 +1,14 @@
 sentinel:
-  server: http://sentinelai:8000
-  api_key: SECRET_KEY
-  batch_size: 20
+  server: http://localhost/api-proxy
+  api_key: "dummy_key"
+  batch_size: 2000
   flush_interval: 1
-  request_timeout: 5
+  request_timeout: 10
   max_backoff: 30
 
 poll_interval: 0.25
 queue_size: 10000
 
 logs:
-  - path: /var/log/auth.log
-    source: linux-auth
-  - path: /var/log/syslog
-    source: linux-syslog
-  - path: /var/log/nginx/access.log
+  - path: ../logfiles.log
     source: nginx

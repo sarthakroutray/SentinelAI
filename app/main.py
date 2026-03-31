@@ -7,7 +7,11 @@ import logging
 
 from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
+from slowapi.util import get_remote_address
 
+from app.limiter import limiter
 from app.api.alerts import router as alerts_router
 from app.api.dashboard_ws import router as dashboard_ws_router
 from app.api.health import router as health_router
@@ -22,14 +26,33 @@ from app.middleware.request_id import RequestIdMiddleware
 from app.realtime.connection_manager import connection_manager
 from app.redis_pool import close_redis
 from app.services.queue_service import listen_dashboard_events
+from app.config import settings
 
 logger = logging.getLogger(__name__)
+
+# ── Rate limiter (shared across routers) ────────────────────────────────────
+# Limiter instantiated in app.limiter to prevent circular imports
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Create tables on startup (idempotent), dispose engine on shutdown."""
+    """Startup validation, table creation, background tasks; shutdown cleanup."""
     setup_logging()
+
+    # ── Production safety gate ──────────────────────────────────────────────
+    if not settings.API_KEY and not settings.DEBUG:
+        raise RuntimeError(
+            "API_KEY must be set in production (DEBUG=False). "
+            "Generate a strong random key and set it in your environment: "
+            "  python -c \"import secrets; print(secrets.token_hex(32))\""
+        )
+
+    if not settings.API_KEY and settings.DEBUG:
+        logger.warning(
+            "API_KEY is not set — authentication is DISABLED. "
+            "This is only acceptable in a local development environment."
+        )
+
     import app.models.log  # noqa: F401
     import app.models.alert  # noqa: F401
 
@@ -75,18 +98,23 @@ app = FastAPI(
     description="Security log ingestion, anomaly scoring, and realtime monitoring",
     version="0.2.0",
     lifespan=lifespan,
+    root_path="/api-proxy",
 )
 
-# Middleware
+# ── Rate limiter integration ─────────────────────────────────────────────────
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
+# ── Middleware ───────────────────────────────────────────────────────────────
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000"],
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_origins=settings.CORS_ORIGINS,   # configurable — no hardcoded localhost
+    allow_methods=["GET", "POST"],          # restrict to only required methods
+    allow_headers=["Content-Type", "X-API-Key", "X-Request-ID"],
 )
 app.add_middleware(RequestIdMiddleware)
 
-# Routers
+# ── Routers ──────────────────────────────────────────────────────────────────
 app.include_router(logs_router)
 app.include_router(alerts_router)
 app.include_router(metrics_router)

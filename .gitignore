@@ -66,6 +66,16 @@ Thumbs.db
 logs/
 *.log
 
+# Debug / temp dump files (never commit these)
+backend_logs.txt
+nginx_logs.txt
+backend_crash.log
+test_output.txt
+ps.txt
+
+# Generated test data
+logfiles.log
+
 # Docker
 docker-compose.override.yml
 *.docker.env

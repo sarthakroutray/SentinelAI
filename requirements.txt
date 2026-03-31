@@ -7,3 +7,5 @@ pydantic-settings>=2.0,<3
 redis>=5.0,<6
 scikit-learn>=1.4,<2
 numpy>=1.26,<3
+slowapi>=0.1.9,<1           # Rate limiting
+joblib>=1.3,<2              # Model serialization / persistence

@@ -3,6 +3,15 @@
 Phase 3: Hybrid anomaly detection with contamination-safe retraining.
 Run via:  python -m app.workers.alert_worker
 
+Key improvements:
+- Isolation scoring is wrapped in asyncio.to_thread so numpy work never
+  stalls the event loop.
+- Structured prediction_log event emitted for every message to enable
+  post-incident ML forensics.
+- Model artifact is restored from Redis on startup before accepting messages,
+  eliminating cold-start scoring degradation after restarts.
+- QueueFull errors from log_service are handled and translated to HTTP 429.
+
 ⚠ SINGLE-WORKER CONSTRAINT
    Detection engines (profile_store, baseline_store, isolation model,
    rule-engine burst tracker) maintain state in-memory.  Running multiple
@@ -16,6 +25,7 @@ from __future__ import annotations
 import asyncio
 from contextlib import suppress
 import logging
+import os
 import signal
 import time
 import uuid
@@ -35,6 +45,7 @@ from app.schemas.alert import AlertResponse
 from app.services.baseline_store import baseline_store
 from app.services.isolation_engine import isolation_engine
 from app.services.queue_service import (
+    QueueMessage,
     acknowledge,
     dequeue,
     enqueue,
@@ -58,7 +69,7 @@ def _signal_handler() -> None:
 
 
 def _log_task_exception(task: asyncio.Task) -> None:
-    """Callback for fire-and-forget tasks so exceptions are surfaced."""
+    """Callback for fire-and-forget tasks so exceptions surface in logs."""
     if task.cancelled():
         return
     exc = task.exception()
@@ -83,8 +94,8 @@ async def _heartbeat_loop(interval_seconds: float = 5.0) -> None:
 async def _sweep_unenqueued_logs() -> int:
     """Re-enqueue logs that were persisted but never reached Redis.
 
-    This covers the case where ``ingest_log`` committed the log row but
-    the subsequent Redis ``enqueue`` call failed (``enqueued=False``).
+    Covers the case where ``ingest_log`` committed the log row but the
+    subsequent Redis ``enqueue`` call failed (``enqueued=False``).
     Called once on worker startup.
     """
     count = 0
@@ -113,8 +124,12 @@ async def _sweep_unenqueued_logs() -> int:
     return count
 
 
-async def _process_message(message: dict) -> None:
-    """Evaluate rules + anomaly scoring for one log payload."""
+async def _process_message(message: QueueMessage) -> None:
+    """Evaluate rules + anomaly scoring for one log payload.
+
+    Emits a structured 'prediction' log entry for every message to support
+    post-incident ML forensics and training data collection.
+    """
     payload = message["payload"]
     log_id = payload.get("log_id")
 
@@ -123,7 +138,7 @@ async def _process_message(message: dict) -> None:
         await retry_or_dlq(message)
         return
 
-    # Check backoff
+    # Respect exponential-backoff delay for retried messages
     process_after = message.get("process_after", 0)
     now = time.time()
     if process_after > now:
@@ -131,7 +146,6 @@ async def _process_message(message: dict) -> None:
 
     session: AsyncSession
     async with async_session() as session:
-        # Verify the log exists
         log = await session.get(Log, uuid.UUID(log_id))
         if log is None:
             logger.error("Log %s not found, sending to DLQ", log_id)
@@ -161,13 +175,14 @@ async def _process_message(message: dict) -> None:
             ip_address=log.ip_address,
         )
 
-        # ── Step 3: Isolation scoring ────────────────────────────────
+        # ── Step 3: Feature extraction + Isolation scoring ───────────
         features = extract_features(
             log_level=log.log_level,
             message=log.message,
             ip_address=log.ip_address,
         )
-        isolation_score = isolation_engine.score(features)
+        # Offload CPU-bound numpy work so it doesn't block the event loop
+        isolation_score = await asyncio.to_thread(isolation_engine.score, features)
 
         # ── Step 4: Combined risk scoring ────────────────────────────
         score_result = score_compute(
@@ -185,7 +200,28 @@ async def _process_message(message: dict) -> None:
         else:
             reason = "No anomaly"
 
-        # ── Step 6: Create alert if risk >= LOW threshold ────────────
+        # ── Step 6: Structured prediction log ────────────────────────
+        # Every inference is logged for forensics and model improvement.
+        logger.info(
+            "Prediction",
+            extra={
+                "event": "prediction",
+                "log_id": log_id,
+                "ip": log.ip_address,
+                "level": log.log_level,
+                "msg_len": len(log.message),
+                "features": features,
+                "stat_score": round(statistical_score, 4),
+                "iso_score": round(isolation_score, 4),
+                "rule_hit": rule_triggered,
+                "rule_severity": rule_result.severity if rule_result else None,
+                "risk_score": score_result.risk_score,
+                "severity": score_result.severity,
+                "anomaly_type": score_result.anomaly_type,
+            },
+        )
+
+        # ── Step 7: Create alert if risk >= LOW threshold ─────────────
         if score_result.severity != "NONE":
             alert = Alert(
                 id=uuid.uuid4(),
@@ -205,6 +241,7 @@ async def _process_message(message: dict) -> None:
                 logger.info("Duplicate alert for log %s (concurrent insert), skipping", log_id)
                 await acknowledge(message)
                 return
+
             await increment_async("alerts_created")
             alert_payload = AlertResponse.model_validate(alert).model_dump(mode="json")
             task = asyncio.create_task(
@@ -212,18 +249,19 @@ async def _process_message(message: dict) -> None:
             )
             task.add_done_callback(_log_task_exception)
             logger.info(
-                "Alert created: severity=%s risk=%.3f type=%s log_id=%s",
+                "Alert created: severity=%s risk=%.3f type=%s model_id=%s log_id=%s",
                 score_result.severity, score_result.risk_score,
-                score_result.anomaly_type, log_id,
+                score_result.anomaly_type, isolation_engine.model_id or "untrained",
+                log_id,
             )
         else:
-            logger.info("No alert for log %s (risk=%.3f)", log_id, score_result.risk_score)
+            logger.info("No alert: log=%s risk=%.3f", log_id, score_result.risk_score)
 
-        # ── Step 7: Contamination guard – baseline only for safe logs ─
+        # ── Step 8: Contamination guard – baseline only for safe logs ─
         if not rule_triggered and score_result.risk_score < settings.ANOMALY_THRESHOLD_LOW:
-            baseline_store.add(features)
+            baseline_store.add(features, ip=log.ip_address)
 
-        # ── Step 8: Trigger retraining if threshold met ──────────────
+        # ── Step 9: Trigger retraining if threshold met ───────────────
         if isolation_engine.should_retrain():
             retrain_task = asyncio.create_task(isolation_engine.retrain_async())
             retrain_task.add_done_callback(_log_task_exception)
@@ -236,21 +274,33 @@ async def run() -> None:
     setup_logging()
     logger.info("Alert worker starting (redis=%s)", settings.REDIS_URL)
 
-    # Register signal handlers for graceful shutdown
+    # Enforce single-worker constraint at runtime
+    replicas = int(os.getenv("WORKER_REPLICAS", "1"))
+    if replicas != 1:
+        raise RuntimeError(
+            f"WORKER_REPLICAS={replicas} is not supported. "
+            "The alert worker must run as a single instance — see Architecture.md."
+        )
+
     loop = asyncio.get_running_loop()
     for sig in (signal.SIGINT, signal.SIGTERM):
         try:
             loop.add_signal_handler(sig, _signal_handler)
         except NotImplementedError:
-            # Windows doesn't support add_signal_handler; use threadsafe callback
             signal.signal(sig, lambda s, f: loop.call_soon_threadsafe(_shutdown.set))
 
-    # Crash recovery: move orphaned processing-queue items back
+    # ── Startup: restore persisted model before accepting messages ────
+    restored = await isolation_engine.restore_from_redis()
+    if restored:
+        logger.info("IsolationForest model restored from Redis — isolation scoring active immediately")
+    else:
+        logger.info("No persisted model found — isolation scoring disabled until first retrain")
+
+    # Crash recovery and un-enqueued log sweep
     recovered = await recover_processing_queue()
     if recovered:
         logger.info("Recovered %d orphaned messages", recovered)
 
-    # Sweep for logs that were persisted but never enqueued to Redis
     swept = await _sweep_unenqueued_logs()
     if swept:
         logger.info("Swept %d un-enqueued logs", swept)
@@ -285,4 +335,3 @@ async def run() -> None:
 
 if __name__ == "__main__":
     asyncio.run(run())
-
